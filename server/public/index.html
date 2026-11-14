@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>산파</title>
+<style>
+  :root {
+    --canvas: #F9FAFB; --surface: #FFFFFF; --hairline: #E5E8EB;
+    --ink: #191F28; --ink-2: #4E5968; --ink-3: #8B95A1; --danger: #F04452;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --canvas: #151517; --surface: #1C1C1F; --hairline: #33333A;
+            --ink: #F2F2F4; --ink-2: #9A9AA1; --ink-3: #6E6E73; }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--canvas); color: var(--ink);
+    font: 400 17px/1.6 Pretendard, "Apple SD Gothic Neo", system-ui, sans-serif;
+    letter-spacing: -0.01em; min-height: 100dvh;
+    display: flex; flex-direction: column;
+    padding: 72px 24px calc(32px + env(safe-area-inset-bottom));
+    max-width: 480px; margin: 0 auto;
+  }
+  .mark { font-size: 14px; font-weight: 500; color: var(--ink-3); }
+  h1 { font-size: 32px; font-weight: 700; line-height: 1.3; margin-top: 16px; word-break: keep-all; }
+  .note { color: var(--ink-2); margin-top: 16px; word-break: keep-all; }
+  .rows { margin-top: 56px; border-top: 1px solid var(--hairline); }
+  .row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 0; border-bottom: 1px solid var(--hairline);
+  }
+  .row span { color: var(--ink-2); }
+  .row button {
+    font: inherit; font-weight: 600; color: var(--ink); background: none; border: 0;
+    padding: 8px 0 8px 16px; cursor: pointer;
+  }
+  .spacer { flex: 1; min-height: 48px; }
+  .main {
+    font: inherit; font-weight: 600; width: 100%; height: 56px; border: 0; border-radius: 16px;
+    background: var(--ink); color: var(--canvas); cursor: pointer;
+    transition: opacity .2s ease;
+  }
+  .main:disabled { opacity: .35; cursor: default; }
+  .main.rec { background: var(--danger); color: #fff; }
+  .sub {
+    font: inherit; color: var(--ink-2); background: none; border: 0;
+    width: 100%; height: 48px; margin-top: 8px; cursor: pointer;
+  }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+  <p class="mark">산파</p>
+  <h1 id="title">잠시만요</h1>
+  <p class="note" id="note"></p>
+
+  <div class="rows" id="rows" hidden>
+    <div class="row" id="parentRow"><span>차에서 온 한마디</span><button id="playParent">듣기</button></div>
+    <div class="row" id="mineRow" hidden><span>내 한마디</span><button id="playMine">듣기</button></div>
+  </div>
+
+  <div class="spacer"></div>
+  <button class="main" id="main" hidden></button>
+  <button class="sub" id="again" hidden>다시 녹음하기</button>
+
+<script>
+const $ = id => document.getElementById(id)
+const pair = new URLSearchParams(location.search).get('pair') || ''
+const api = (path, extra = '') => `/api/${path}?pair=${encodeURIComponent(pair)}${extra}`
+const MAX_MS = 60000
+
+let state = null, mine = null, mineUrl = null, starting = false
+const audio = new Audio()
+
+function show(title, note = '') { $('title').textContent = title; $('note').textContent = note }
+
+function setMain(label, onClick, cls = '') {
+  const b = $('main'); b.hidden = !label; b.textContent = label || ''
+  b.className = 'main ' + cls; b.disabled = false; b.onclick = onClick
+}
+
+async function load(quiet = false) {
+  if (!pair) return show('주소가 올바르지 않아요', '받은 주소를 다시 열어 주세요.')
+  let next
+  try {
+    const r = await fetch(api('state')); if (!r.ok) throw 0
+    next = await r.json()
+  } catch { return quiet ? undefined : show('불러오지 못했어요', '잠시 뒤에 다시 열어 주세요.') }
+  if (quiet && !idle()) return // 불러오는 사이 녹음을 시작했다
+  state = next
+  render()
+}
+
+function render() {
+  if (!state.question || !state.parent) {
+    $('rows').hidden = true; setMain(null)
+    return show('아직 도착한 한마디가 없어요', '가족이 차에서 한마디 남기면 여기에 와요.')
+  }
+  $('rows').hidden = false
+  $('mineRow').hidden = !mine && !state.child
+  $('again').hidden = !mine
+  if (mine) {
+    show(state.question.text, '들어 보고 보내 주세요.')
+    setMain('보내기', send)
+  } else if (state.child) {
+    show(state.question.text, '보냈어요. 다음에 차를 켜면 들려요.')
+    setMain('다시 녹음하기', start)
+  } else {
+    show(state.question.text, '가족이 차에서 이 물음에 한마디 남겼어요. 듣고, 내 한마디도 남겨 주세요.')
+    setMain('한마디 남기기', start)
+  }
+}
+
+// 듣기는 화면에 보이는 그 회차의 소리만 튼다.
+const voice = who => api('voice', `&who=${who}&q=${encodeURIComponent(state.question.id)}&t=${state[who].at}` + (state[who].v ? `&v=${state[who].v}` : ''))
+function play(src) { audio.src = src; audio.play().catch(() => {}) }
+function setMine(blob) {
+  if (mineUrl) URL.revokeObjectURL(mineUrl)
+  mine = blob; mineUrl = blob ? URL.createObjectURL(blob) : null
+}
+$('playParent').onclick = () => play(voice('parent'))
+$('playMine').onclick = () => play(mine ? mineUrl : voice('child'))
+
+async function start() {
+  if (starting) return // 마이크 허용을 기다리는 동안 두 번 눌러도 녹음기는 하나
+  starting = true
+  audio.pause()
+  let stream = null
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    // webm 을 먼저 고른다. 크롬의 audio/mp4 는 속이 Opus 라 차(안드로이드 MediaPlayer)에서 안 틀린다(개발 3 실측).
+    // webm 이 없는 사파리는 audio/mp4(AAC)로 가고, 그건 차에서 틀린다.
+    const type = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4;codecs=mp4a.40.2', 'audio/mp4'].find(t => MediaRecorder.isTypeSupported(t))
+    const recorder = new MediaRecorder(stream, type ? { mimeType: type } : undefined)
+    const chunks = []
+    recorder.ondataavailable = e => e.data.size && chunks.push(e.data)
+    const timer = setTimeout(() => recorder.state === 'recording' && recorder.stop(), MAX_MS)
+    recorder.onstop = () => {
+      clearTimeout(timer)
+      stream.getTracks().forEach(t => t.stop())
+      starting = false
+      setMine(new Blob(chunks, { type: (recorder.mimeType || 'audio/mp4').split(';')[0] }))
+      render()
+    }
+    recorder.start()
+    $('again').hidden = true
+    show(state.question.text, '듣고 있어요. 다 말했으면 눌러 주세요.')
+    setMain('다 말했어요', () => recorder.state === 'recording' && recorder.stop(), 'rec')
+  } catch {
+    stream?.getTracks().forEach(t => t.stop())
+    starting = false
+    show(state.question.text, '마이크를 쓸 수 없어요. 브라우저 설정에서 마이크를 허용해 주세요.')
+  }
+}
+$('again').onclick = start
+
+async function send() {
+  $('main').disabled = true; $('again').hidden = true
+  try {
+    const r = await fetch(api('voice', '&who=child&q=' + encodeURIComponent(state.question.id)), {
+      method: 'PUT', headers: { 'content-type': mine.type }, body: mine,
+    })
+    // 다시 불러오는 동안은 버튼을 잠가 둔다(그사이 녹음을 시작하면 종료 버튼이 사라진다 — 코덱스 R2).
+    // 불러오기가 실패해도 잠긴 채 남지 않게 끝나면 화면을 되돌린다(잠겨 있으면 자동 갱신도 멈춘다 — 코덱스 R1).
+    // 녹음은 버리지 않는다 — 다시 할 수 없는 말일 수 있다(코덱스 R1 P0, 개발 5). 새 물음을 보여 주고, 보낼지 다시 녹음할지는 가족이 정한다.
+    if (r.status === 409) { await load(); render(); return show($('title').textContent, '그사이 새 물음이 왔어요. 남긴 녹음은 그대로 있어요 — 들어 보고 보내거나 다시 녹음해 주세요.') }
+    if (!r.ok) throw 0
+    state = await r.json(); setMine(null); render()
+  } catch {
+    render(); show(state.question.text, '보내지 못했어요. 다시 눌러 주세요.')
+  }
+}
+
+load()
+// 먼저 열어 두고 기다리는 사람에게도 새 한마디가 닿게 한다. 녹음하거나 들어 보는 중에는 건드리지 않는다.
+const idle = () => !starting && !mine && !$('main').disabled && audio.paused
+setInterval(() => { if (idle() && !document.hidden) load(true) }, 15000)
+document.addEventListener('visibilitychange', () => { if (idle() && !document.hidden) load(true) })
+</script>
+</body>
+</html>

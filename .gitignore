@@ -1,0 +1,16 @@
+.DS_Store
+*.docx
+*.pdf
+.env*
+local.properties
+
+.gradle/
+build/
+app/build/
+*.apk
+!apk/*.apk
+private/
+참고_조사.md
+node_modules/
+.vercel/
+.kotlin/
